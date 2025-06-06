@@ -15,7 +15,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_distances
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 import random
 from typing import List, Dict, Optional
 from pydantic import BaseModel
@@ -90,8 +90,9 @@ class ProductRecommendation:
         self.numerical_cols = ['price', 'rating']
         self.categorical_cols = ['color', 'size', 'material', 'style']
         
-        # Create one-hot encoder for categorical variables
-        self.encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+        # Create encoders
+        self.cat_encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+        self.num_scaler = StandardScaler()
         
         # Prepare the data
         self.prepare_data()
@@ -108,18 +109,26 @@ class ProductRecommendation:
         cat_data = self.df[self.categorical_cols]
         
         # Fit and transform categorical data
-        encoded_cats = self.encoder.fit_transform(cat_data)
+        encoded_cats = self.cat_encoder.fit_transform(cat_data)
         
-        # Get numerical data and normalize
+        # Get numerical data and scale
         num_data = self.df[self.numerical_cols].values
-        num_data = (num_data - num_data.mean(axis=0)) / num_data.std(axis=0)
+        scaled_nums = self.num_scaler.fit_transform(num_data)
         
         # Combine numerical and encoded categorical data
-        self.X = np.hstack([num_data, encoded_cats])
+        self.X = np.hstack([scaled_nums, encoded_cats])
         self.ids = self.df['product_id'].values
         
         # Store original data for display
         self.original_df = self.df.copy()
+        
+        # Store feature names for later use
+        self.feature_names = (
+            self.numerical_cols + 
+            [f"{col}_{val}" for col, vals in zip(self.categorical_cols, 
+                                               self.cat_encoder.categories_) 
+             for val in vals]
+        )
 
     def get_current_recommendations(self) -> List[Dict]:
         """Get current recommended products with their attributes"""
@@ -127,11 +136,22 @@ class ProductRecommendation:
 
     def initialize_recommendations(self) -> List[str]:
         """Initialize with 3 diverse products"""
+        if len(self.ids) < 3:
+            raise ValueError("Need at least 3 products in the dataset")
+            
+        # Start with a random product
         self.selected_indices = [random.randrange(len(self.ids))]
+        
+        # Add two more diverse products
         for _ in range(2):
-            dist = cosine_distances(self.X, self.X[self.selected_indices]).min(axis=1)
-            next_idx = dist.argmax()
+            # Calculate distances to already selected products
+            distances = cosine_distances(self.X, self.X[self.selected_indices])
+            # Get minimum distance to any selected product
+            min_distances = distances.min(axis=1)
+            # Select the product furthest from all selected products
+            next_idx = min_distances.argmax()
             self.selected_indices.append(next_idx)
+            
         return self.get_current_recommendations()
 
     def update_recommendations(self, liked_ids: List[str]) -> Dict:
@@ -145,11 +165,17 @@ class ProductRecommendation:
         selected_ids = self.ids[self.selected_indices]
         selected_X = self.X[self.selected_indices]
         liked_mask = np.isin(selected_ids, liked_ids)
+        
+        # Update weights: add for liked products, subtract for disliked
         self.weights += selected_X[liked_mask].sum(axis=0)
         self.weights -= selected_X[~liked_mask].sum(axis=0)
 
-        # Score and select new products
-        scores = self.X.dot(self.weights) + np.random.randn(len(self.ids)) * 0.01
+        # Score all products
+        scores = self.X.dot(self.weights)
+        # Add small random noise to break ties
+        scores += np.random.randn(len(scores)) * 0.01
+        
+        # Select top 3 products
         self.selected_indices = np.argsort(scores)[-3:][::-1]
 
         # Generate prompt if this is the last iteration
@@ -158,14 +184,9 @@ class ProductRecommendation:
             feature_importance = np.abs(self.weights)
             top_features_idx = np.argsort(feature_importance)[-5:][::-1]  # Top 5 features
             
-            # Get the original feature names
-            feature_names = (self.numerical_cols + 
-                           [f"{col}_{val}" for col, vals in zip(self.categorical_cols, 
-                                                              self.encoder.categories_) 
-                            for val in vals])
-            
             # Get the most important features
-            important_features = [feature_names[i] for i in top_features_idx if feature_importance[i] > 0]
+            important_features = [self.feature_names[i] for i in top_features_idx 
+                                if feature_importance[i] > 0]
             
             prompt = "Looking for products with features: " + ", ".join(important_features)
             return {
