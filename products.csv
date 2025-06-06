@@ -1,0 +1,11 @@
+product_id,price,color,size,material,style,rating
+P001,99.99,red,medium,cotton,casual,4.5
+P002,149.99,blue,large,denim,formal,4.2
+P003,79.99,black,small,polyester,sport,4.8
+P004,199.99,white,medium,wool,formal,4.6
+P005,59.99,green,large,cotton,casual,4.0
+P006,129.99,grey,medium,linen,casual,4.3
+P007,89.99,blue,small,denim,casual,4.4
+P008,169.99,black,large,wool,formal,4.7
+P009,69.99,red,medium,polyester,sport,4.1
+P010,189.99,white,large,linen,formal,4.9 
