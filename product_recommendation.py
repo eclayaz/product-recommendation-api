@@ -15,6 +15,7 @@
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_distances
+from sklearn.preprocessing import OneHotEncoder
 import random
 from typing import List, Dict, Optional
 from pydantic import BaseModel
@@ -84,13 +85,45 @@ class ProductRecommendation:
     def __init__(self, csv_path: str = 'products.csv'):
         # Load product data
         self.df = pd.read_csv(csv_path)
-        self.attributes = [col for col in self.df.columns if col != 'product_id']
-        self.X = self.df[self.attributes].values
-        self.ids = self.df['product_id'].values
-        self.weights = np.zeros(len(self.attributes))
+        
+        # Separate numerical and categorical columns
+        self.numerical_cols = ['price', 'rating']
+        self.categorical_cols = ['color', 'size', 'material', 'style']
+        
+        # Create one-hot encoder for categorical variables
+        self.encoder = OneHotEncoder(sparse_output=False, handle_unknown='ignore')
+        
+        # Prepare the data
+        self.prepare_data()
+        
+        # Initialize state
+        self.weights = np.zeros(self.X.shape[1])
         self.selected_indices = []
         self.iteration = 0
         self.initialize_recommendations()
+
+    def prepare_data(self):
+        """Prepare the data by encoding categorical variables and scaling numerical ones"""
+        # Get categorical data
+        cat_data = self.df[self.categorical_cols]
+        
+        # Fit and transform categorical data
+        encoded_cats = self.encoder.fit_transform(cat_data)
+        
+        # Get numerical data and normalize
+        num_data = self.df[self.numerical_cols].values
+        num_data = (num_data - num_data.mean(axis=0)) / num_data.std(axis=0)
+        
+        # Combine numerical and encoded categorical data
+        self.X = np.hstack([num_data, encoded_cats])
+        self.ids = self.df['product_id'].values
+        
+        # Store original data for display
+        self.original_df = self.df.copy()
+
+    def get_current_recommendations(self) -> List[Dict]:
+        """Get current recommended products with their attributes"""
+        return self.original_df.iloc[self.selected_indices].to_dict('records')
 
     def initialize_recommendations(self) -> List[str]:
         """Initialize with 3 diverse products"""
@@ -100,10 +133,6 @@ class ProductRecommendation:
             next_idx = dist.argmax()
             self.selected_indices.append(next_idx)
         return self.get_current_recommendations()
-
-    def get_current_recommendations(self) -> List[Dict]:
-        """Get current recommended products with their attributes"""
-        return self.df.iloc[self.selected_indices].to_dict('records')
 
     def update_recommendations(self, liked_ids: List[str]) -> Dict:
         """Update recommendations based on user feedback"""
@@ -125,8 +154,20 @@ class ProductRecommendation:
 
         # Generate prompt if this is the last iteration
         if self.iteration == 4:
-            positive_attributes = [self.attributes[i] for i, w in enumerate(self.weights) if w > 0]
-            prompt = "Looking for products with features: " + ", ".join(positive_attributes)
+            # Get the most influential features
+            feature_importance = np.abs(self.weights)
+            top_features_idx = np.argsort(feature_importance)[-5:][::-1]  # Top 5 features
+            
+            # Get the original feature names
+            feature_names = (self.numerical_cols + 
+                           [f"{col}_{val}" for col, vals in zip(self.categorical_cols, 
+                                                              self.encoder.categories_) 
+                            for val in vals])
+            
+            # Get the most important features
+            important_features = [feature_names[i] for i in top_features_idx if feature_importance[i] > 0]
+            
+            prompt = "Looking for products with features: " + ", ".join(important_features)
             return {
                 "recommendations": self.get_current_recommendations(),
                 "prompt": prompt,
@@ -142,7 +183,7 @@ class ProductRecommendation:
 
     def reset(self) -> List[Dict]:
         """Reset the recommendation system"""
-        self.weights = np.zeros(len(self.attributes))
+        self.weights = np.zeros(self.X.shape[1])
         self.iteration = 0
         return self.initialize_recommendations()
 
